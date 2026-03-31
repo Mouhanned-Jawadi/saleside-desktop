@@ -67,9 +67,23 @@ function createWindow() {
   // Load the app via the local server, forcing the login route
   mainWindow.loadURL(`http://localhost:${PORT}/login`);
 
-  // Keep DevTools closed by default; opt in only when explicitly requested.
-  if (process.env.SALESIDE_OPEN_DEVTOOLS === 'true') {
+  // Keep DevTools closed by default in packaged builds.
+  // In development, allow opt-in via SALESIDE_OPEN_DEVTOOLS=true.
+  if (!app.isPackaged && process.env.SALESIDE_OPEN_DEVTOOLS === 'true') {
     mainWindow.webContents.openDevTools();
+  }
+
+  // Prevent opening DevTools with keyboard shortcuts in packaged builds.
+  if (app.isPackaged) {
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      const key = (input.key || '').toUpperCase();
+      const isF12 = key === 'F12';
+      const isCtrlShiftI = input.control && input.shift && key === 'I';
+
+      if (isF12 || isCtrlShiftI) {
+        event.preventDefault();
+      }
+    });
   }
 
   mainWindow.on('closed', () => {
