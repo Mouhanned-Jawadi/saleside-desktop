@@ -52,6 +52,8 @@ function startServer() {
 function createWindow() {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
   const iconPath = path.join(__dirname, 'icon.png');
+  const shouldHideFromCapture =
+    app.isPackaged && process.env.SALESIDE_HIDE_FROM_CAPTURE !== 'false';
 
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -63,6 +65,11 @@ function createWindow() {
     },
     autoHideMenuBar: true, // Optional: hide the menu bar
   });
+
+  // On Windows, this maps to display affinity and excludes the window from screen capture.
+  if (shouldHideFromCapture) {
+    mainWindow.setContentProtection(true);
+  }
 
   // Load the app via the local server, forcing the login route
   mainWindow.loadURL(`http://localhost:${PORT}/login`);
@@ -92,6 +99,15 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  const shouldHideFromCapture =
+    app.isPackaged && process.env.SALESIDE_HIDE_FROM_CAPTURE !== 'false';
+
+  app.on('browser-window-created', (_event, window) => {
+    if (shouldHideFromCapture) {
+      window.setContentProtection(true);
+    }
+  });
+
   startServer();
 
   app.on('activate', () => {
