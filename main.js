@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
+const net = require('net');
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
@@ -12,20 +13,45 @@ try {
 }
 
 // Config
-const PORT = 3000;
+const PREFERRED_PORT = 3000;
 const API_URL = 'https://saleside-back-20-production.up.railway.app/';
 const PROXY_PATHS = ['/api', '/auth', '/launch-bot', '/socket.io'];
 
 let mainWindow;
 let server;
+let activePort = PREFERRED_PORT; // set once a free port is found
+
+/** Resolve with the first free TCP port starting from `start`. */
+function findFreePort(start) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(findFreePort(start + 1)));
+    probe.once('listening', () => {
+      probe.close(() => resolve(start));
+    });
+    probe.listen(start, '127.0.0.1');
+  });
+}
 
 // ─── SDK State ────────────────────────────────────────────────────────────────
-/** Most recently detected meeting window, or null if none is active. */
+/**
+ * All currently detected meeting windows, keyed by window ID.
+ * Multiple meetings can be open at the same time (e.g. Zoom + Teams).
+ */
+let detectedMeetings = new Map(); // windowId → { id, title, platform }
+/** Most recently detected meeting — kept for backward-compat with single-meeting IPC. */
 let currentDetectedMeeting = null;
 /** WindowId of the currently active recording, or null when idle. */
 let currentRecordingWindowId = null;
 /** Whether the SDK is actively recording right now. */
 let sdkIsRecording = false;
+
+/** Broadcast the full list of detected meetings to the renderer. */
+function broadcastDetectedMeetings() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('sdk:detectedMeetingsUpdated', Array.from(detectedMeetings.values()));
+  }
+}
 
 function initDesktopSdk() {
   if (!RecallAiSdk) return;
@@ -38,22 +64,48 @@ function initDesktopSdk() {
     return;
   }
 
-  // ── Meeting detection ───────────────────────────────────────────────────────
+  // ── Meeting detection (fires for Zoom, Teams, and Google Meet windows) ──────
   RecallAiSdk.addEventListener('meeting-detected', (evt) => {
     const { window: meetingWindow } = evt;
     console.log('[SDK] Meeting detected:', meetingWindow);
 
-    currentDetectedMeeting = {
+    const meeting = {
       id: meetingWindow.id,
       title: meetingWindow.title || '',
       platform: meetingWindow.platform || 'unknown',
     };
 
-    // Notify the renderer if the window is already open
+    detectedMeetings.set(meetingWindow.id, meeting);
+    currentDetectedMeeting = meeting;
+
+    // Notify the renderer of the specific detection and the updated full list
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('sdk:meetingDetected', currentDetectedMeeting);
+      mainWindow.webContents.send('sdk:meetingDetected', meeting);
     }
+    broadcastDetectedMeetings();
   });
+
+  // ── Meeting ended (window closed — SDK emits this when a meeting app closes) ─
+  try {
+    RecallAiSdk.addEventListener('meeting-ended', (evt) => {
+      const windowId = evt?.window?.id;
+      console.log('[SDK] Meeting ended for window:', windowId);
+      if (windowId !== undefined) {
+        detectedMeetings.delete(windowId);
+        // Update currentDetectedMeeting to another open meeting, or null
+        if (currentDetectedMeeting?.id === windowId) {
+          const remaining = Array.from(detectedMeetings.values());
+          currentDetectedMeeting = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+        }
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('sdk:meetingEnded', { windowId });
+      }
+      broadcastDetectedMeetings();
+    });
+  } catch (_) {
+    // SDK version may not support meeting-ended — safe to ignore
+  }
 
   // ── SDK state transitions ───────────────────────────────────────────────────
   RecallAiSdk.addEventListener('sdk-state-change', (evt) => {
@@ -65,7 +117,9 @@ function initDesktopSdk() {
     } else if (stateCode === 'idle') {
       sdkIsRecording = false;
       currentRecordingWindowId = null;
-      currentDetectedMeeting = null;
+      // Do NOT clear detectedMeetings here — the meeting window may still be
+      // open even though recording has stopped. Meetings are cleared only when
+      // the window actually closes (meeting-ended) or the app quits.
     }
 
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -79,7 +133,7 @@ function initDesktopSdk() {
     console.log('[SDK] Recording ended for window:', windowId);
     sdkIsRecording = false;
     currentRecordingWindowId = null;
-    currentDetectedMeeting = null;
+    // Keep detectedMeetings intact — the meeting window is likely still open.
 
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('sdk:recordingEnded', { windowId });
@@ -125,8 +179,18 @@ function initDesktopSdk() {
 
 // ─── IPC Handlers ─────────────────────────────────────────────────────────────
 
-/** Return the currently detected meeting (or null). */
-ipcMain.handle('sdk:getDetectedMeeting', () => currentDetectedMeeting);
+/** Return the active server port so the preload can expose the correct origin. */
+ipcMain.handle('app:getPort', () => activePort);
+
+/** Return the currently detected meeting (or null) — backward-compat single-item form. */
+ipcMain.handle('sdk:getDetectedMeeting', () => {
+  if (currentDetectedMeeting) return currentDetectedMeeting;
+  const all = Array.from(detectedMeetings.values());
+  return all.length > 0 ? all[all.length - 1] : null;
+});
+
+/** Return ALL currently detected meeting windows as an array. */
+ipcMain.handle('sdk:getDetectedMeetings', () => Array.from(detectedMeetings.values()));
 
 /** Start recording. windowId and uploadToken come from the renderer. */
 ipcMain.handle('sdk:startRecording', async (_event, { windowId, uploadToken }) => {
@@ -156,7 +220,12 @@ ipcMain.handle('sdk:stopRecording', async () => {
 
 // ─── Express + Electron setup ─────────────────────────────────────────────────
 
-function startServer() {
+async function startServer() {
+  activePort = await findFreePort(PREFERRED_PORT);
+  if (activePort !== PREFERRED_PORT) {
+    console.log(`[Server] Port ${PREFERRED_PORT} in use — using port ${activePort} instead`);
+  }
+
   const expressApp = express();
 
   const distPath = app.isPackaged
@@ -184,13 +253,13 @@ function startServer() {
     res.sendFile(path.join(resolvedDist, 'index.html'));
   });
 
-  server = expressApp.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    createWindow();
+  server = expressApp.listen(activePort, () => {
+    console.log(`Server running on http://localhost:${activePort}`);
+    createWindow(activePort);
   });
 }
 
-function createWindow() {
+function createWindow(port) {
   const iconPath = path.join(__dirname, 'icon.png');
 
   mainWindow = new BrowserWindow({
@@ -206,7 +275,7 @@ function createWindow() {
     autoHideMenuBar: true,
   });
 
-  mainWindow.loadURL(`http://localhost:${PORT}/login`);
+  mainWindow.loadURL(`http://localhost:${port}/login`);
 
   if (!app.isPackaged && process.env.SALESIDE_OPEN_DEVTOOLS === 'true') {
     mainWindow.webContents.openDevTools();

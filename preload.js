@@ -40,11 +40,35 @@ contextBridge.exposeInMainWorld('electron', {
     stopRecording: () => ipcRenderer.invoke('sdk:stopRecording'),
 
     /**
+     * Returns ALL currently detected meeting windows as an array.
+     * Includes Zoom, Teams, and Google Meet — both desktop apps and browser tabs.
+     * @returns {Promise<Array<{id: number, title: string, platform: string}>>}
+     */
+    getDetectedMeetings: () => ipcRenderer.invoke('sdk:getDetectedMeetings'),
+
+    /**
      * Register a callback that fires when the SDK detects a meeting window.
      * @param {function({id, title, platform}): void} callback
      */
     onMeetingDetected: (callback) => {
       ipcRenderer.on('sdk:meetingDetected', (_event, data) => callback(data));
+    },
+
+    /**
+     * Register a callback that fires when a meeting window is closed/ended.
+     * @param {function({windowId: number}): void} callback
+     */
+    onMeetingEnded: (callback) => {
+      ipcRenderer.on('sdk:meetingEnded', (_event, data) => callback(data));
+    },
+
+    /**
+     * Register a callback that fires whenever the full list of detected
+     * meetings changes (meeting opened or closed).
+     * @param {function(Array<{id, title, platform}>): void} callback
+     */
+    onDetectedMeetingsUpdated: (callback) => {
+      ipcRenderer.on('sdk:detectedMeetingsUpdated', (_event, data) => callback(data));
     },
 
     /**
@@ -76,7 +100,14 @@ contextBridge.exposeInMainWorld('electron', {
 
     /** Remove all listeners for a given SDK channel (use on component unmount). */
     removeAllListeners: (channel) => {
-      const allowed = ['sdk:meetingDetected', 'sdk:stateChange', 'sdk:recordingEnded', 'sdk:transcript'];
+      const allowed = [
+        'sdk:meetingDetected',
+        'sdk:meetingEnded',
+        'sdk:detectedMeetingsUpdated',
+        'sdk:stateChange',
+        'sdk:recordingEnded',
+        'sdk:transcript',
+      ];
       if (allowed.includes(channel)) {
         ipcRenderer.removeAllListeners(channel);
       }
@@ -95,8 +126,9 @@ contextBridge.exposeInMainWorld('electron', {
 
   /**
    * Returns the origin of the Electron-embedded Express server.
-   * Used by aiBotService to build callback URLs.
-   * @returns {string}
+   * Uses the actual port chosen at startup (may differ from 3000 if that port was busy).
+   * @returns {Promise<string>}
    */
-  getFrontendOrigin: () => 'http://localhost:3000',
+  getFrontendOrigin: () =>
+    ipcRenderer.invoke('app:getPort').then((port) => `http://localhost:${port}`),
 });
