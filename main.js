@@ -4,6 +4,12 @@ const net = require('net');
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
+// Installer passes --quit to gracefully close the running app before overwriting files.
+if (process.argv.includes('--quit')) {
+  app.quit();
+  process.exit(0);
+}
+
 // ─── Recall Desktop Recording SDK ────────────────────────────────────────────
 let RecallAiSdk = null;
 try {
