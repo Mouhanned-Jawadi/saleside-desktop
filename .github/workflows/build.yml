@@ -58,7 +58,7 @@ jobs:
       - name: Upload to GitHub Release
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          gh release upload "v${VERSION}" ${{ matrix.artifact-path }} --clobber
+          gh release upload "v${VERSION}" ${{ matrix.artifact-path }} --clobber --repo Mouhanned-Jawadi/saleside-desktop
