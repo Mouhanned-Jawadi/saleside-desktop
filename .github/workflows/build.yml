@@ -30,8 +30,8 @@ jobs:
       - name: Checkout frontend
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/SaleSide-Front-2.0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: Mohanad-Ahmed-ETG/SaleSide-Front-2.0
+          token: ${{ secrets.GH_PAT }}
           path: frontend
 
       - uses: actions/setup-node@v4
