@@ -153,6 +153,9 @@ function initDesktopSdk() {
     const eventType = evt?.event;
     if (!eventType) return;
 
+    // Log every event type so we can diagnose what the SDK is actually sending
+    console.log('[SDK] realtime-event type=%s', eventType);
+
     if (eventType === 'transcript.data' || eventType === 'transcript.partial_data') {
       const words = evt?.data?.words || [];
       const text = words.map(w => w.text || '').join(' ').trim();
@@ -160,12 +163,19 @@ function initDesktopSdk() {
       const speakerName = participant.name || String(participant.id || 'Unknown');
       const isFinal = eventType === 'transcript.data';
 
+      // Detect if the SDK itself identifies this participant as the local user.
+      // Recall.ai may expose is_self, is_local, or type='local' depending on SDK version.
+      const sdkMarkedLocal = !!(participant.is_self || participant.is_local || participant.type === 'local');
+
+      console.log('[SDK] transcript speaker=%s isFinal=%s isLocal=%s text=%s', speakerName, isFinal, sdkMarkedLocal, text.slice(0, 60));
+
       if (text && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('sdk:transcript', {
           text,
           speaker: speakerName,
           isFinal,
           timestamp: Date.now(),
+          isLocalSpeaker: sdkMarkedLocal,
         });
       }
     }
@@ -202,10 +212,15 @@ ipcMain.handle('sdk:getDetectedMeetings', () => Array.from(detectedMeetings.valu
 ipcMain.handle('sdk:startRecording', async (_event, { windowId, uploadToken }) => {
   if (!RecallAiSdk) throw new Error('Desktop SDK not available');
   console.log('[SDK] startRecording windowId=%s token=%s...', windowId, uploadToken?.slice(0, 8));
-  await RecallAiSdk.startRecording({ windowId, uploadToken });
-  currentRecordingWindowId = windowId;
-  sdkIsRecording = true;
-  console.log('[SDK] Recording started');
+  try {
+    await RecallAiSdk.startRecording({ windowId, uploadToken });
+    currentRecordingWindowId = windowId;
+    sdkIsRecording = true;
+    console.log('[SDK] Recording started successfully for windowId=%s', windowId);
+  } catch (err) {
+    console.error('[SDK] startRecording FAILED:', err);
+    throw err;
+  }
 });
 
 /** Stop the current recording — requires the same windowId used to start. */
