@@ -32,7 +32,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Mohanad-Ahmed-ETG/SaleSide-Front-2.0
-          token: ${{ secrets.GH_PAT }}
+          token: ${{ secrets.GH_TOKEN }}
           path: frontend
 
       - uses: actions/setup-node@v4
@@ -58,7 +58,7 @@ jobs:
       - name: Upload to GitHub Release
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
           gh release upload "v${VERSION}" ${{ matrix.artifact-path }} --clobber --repo Mouhanned-Jawadi/saleside-desktop
