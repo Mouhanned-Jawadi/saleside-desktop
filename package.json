@@ -6,7 +6,8 @@
   "scripts": {
     "start": "electron .",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder",
+    "dist": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
     "dist:portable": "electron-builder --config.win.target=portable",
     "dist:signed": "electron-builder"
   },
@@ -30,6 +31,10 @@
     "directories": {
       "output": "release"
     },
+    "asarUnpack": [
+      "dist/**/*",
+      "node_modules/@recallai/desktop-sdk/**/*"
+    ],
     "win": {
       "target": [
         { "target": "nsis", "arch": ["x64"] },
@@ -37,11 +42,15 @@
       ],
       "icon": "icon.ico",
       "publisherName": "SaleSide",
-      "signingHashAlgorithms": ["sha256"],
-      "asarUnpack": [
-        "dist/**/*",
-        "node_modules/@recallai/desktop-sdk/**/*"
-      ]
+      "signingHashAlgorithms": ["sha256"]
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] }
+      ],
+      "icon": "icon.png",
+      "category": "public.app-category.business",
+      "identity": null
     },
     "nsis": {
       "oneClick": false,

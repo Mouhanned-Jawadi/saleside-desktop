@@ -1,0 +1,62 @@
+name: Build Desktop App
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            script: dist
+            artifact-name: windows-installers
+            artifact-path: release/*.exe
+          - os: macos-latest
+            script: dist:mac
+            artifact-name: macos-dmg
+            artifact-path: release/*.dmg
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout desktop app
+        uses: actions/checkout@v4
+
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/SaleSide-Front-2.0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: frontend
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install and build frontend
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - name: Copy frontend dist into desktop app
+        shell: bash
+        run: cp -r frontend/dist/. dist/
+
+      - name: Install desktop dependencies
+        run: npm ci
+
+      - name: Build (${{ matrix.os }})
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run ${{ matrix.script }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-path }}
+          if-no-files-found: error
