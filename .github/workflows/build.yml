@@ -8,18 +8,19 @@ on:
 
 jobs:
   build:
+    permissions:
+      contents: write
+
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
             script: dist
-            artifact-name: windows-installers
-            artifact-path: release/*.exe
+            artifact-path: "release/*.exe"
           - os: macos-latest
             script: dist:mac
-            artifact-name: macos-dmg
-            artifact-path: release/*.dmg
+            artifact-path: "release/*.dmg"
 
     runs-on: ${{ matrix.os }}
 
@@ -49,8 +50,15 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci
 
-      - name: Build and publish (${{ matrix.os }})
+      - name: Build (${{ matrix.os }})
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run ${{ matrix.script }} -- --publish never
+
+      - name: Upload to GitHub Release
+        shell: bash
+        env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run ${{ matrix.script }} -- --publish always
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          gh release upload "v${VERSION}" ${{ matrix.artifact-path }} --clobber
