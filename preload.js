@@ -98,6 +98,16 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.on('sdk:transcript', (_event, data) => callback(data));
     },
 
+    /**
+     * Register a callback for raw SDK diagnostic log lines forwarded from
+     * main.js.  Use this to surface realtime-event structure and errors in
+     * the UI without needing DevTools.
+     * @param {function(string): void} callback
+     */
+    onSdkLog: (callback) => {
+      ipcRenderer.on('sdk:sdkLog', (_event, msg) => callback(msg));
+    },
+
     /** Remove all listeners for a given SDK channel (use on component unmount). */
     removeAllListeners: (channel) => {
       const allowed = [
@@ -107,6 +117,7 @@ contextBridge.exposeInMainWorld('electron', {
         'sdk:stateChange',
         'sdk:recordingEnded',
         'sdk:transcript',
+        'sdk:sdkLog',
       ];
       if (allowed.includes(channel)) {
         ipcRenderer.removeAllListeners(channel);

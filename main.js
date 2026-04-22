@@ -91,27 +91,25 @@ function initDesktopSdk() {
     broadcastDetectedMeetings();
   });
 
-  // ── Meeting ended (window closed — SDK emits this when a meeting app closes) ─
-  try {
-    RecallAiSdk.addEventListener('meeting-ended', (evt) => {
-      const windowId = evt?.window?.id;
-      console.log('[SDK] Meeting ended for window:', windowId);
-      if (windowId !== undefined) {
-        detectedMeetings.delete(windowId);
-        // Update currentDetectedMeeting to another open meeting, or null
-        if (currentDetectedMeeting?.id === windowId) {
-          const remaining = Array.from(detectedMeetings.values());
-          currentDetectedMeeting = remaining.length > 0 ? remaining[remaining.length - 1] : null;
-        }
+  // ── Meeting closed/ended (window closed) ──────────────────────────────────
+  // Different SDK versions use different event names — listen to both.
+  const _handleMeetingClosed = (evt) => {
+    const windowId = evt?.window?.id;
+    console.log('[SDK] Meeting closed for window:', windowId);
+    if (windowId !== undefined) {
+      detectedMeetings.delete(windowId);
+      if (currentDetectedMeeting?.id === windowId) {
+        const remaining = Array.from(detectedMeetings.values());
+        currentDetectedMeeting = remaining.length > 0 ? remaining[remaining.length - 1] : null;
       }
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('sdk:meetingEnded', { windowId });
-      }
-      broadcastDetectedMeetings();
-    });
-  } catch (_) {
-    // SDK version may not support meeting-ended — safe to ignore
-  }
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('sdk:meetingEnded', { windowId });
+    }
+    broadcastDetectedMeetings();
+  };
+  try { RecallAiSdk.addEventListener('meeting-closed', _handleMeetingClosed); } catch (_) {}
+  try { RecallAiSdk.addEventListener('meeting-ended', _handleMeetingClosed); } catch (_) {}
 
   // ── SDK state transitions ───────────────────────────────────────────────────
   RecallAiSdk.addEventListener('sdk-state-change', (evt) => {
@@ -133,6 +131,43 @@ function initDesktopSdk() {
     }
   });
 
+  // ── Recording started ───────────────────────────────────────────────────────
+  try {
+    RecallAiSdk.addEventListener('recording-started', (evt) => {
+      const windowId = evt?.window?.id ?? null;
+      const msg = `[SDK] Recording started for windowId=${windowId}`;
+      console.log(msg);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('sdk:sdkLog', msg);
+      }
+    });
+  } catch (_) {}
+
+  // ── Media capture status ────────────────────────────────────────────────────
+  // Fires when audio capture starts or stops. capturing=false means the SDK
+  // cannot access the meeting audio — surfaces this immediately in the UI.
+  try {
+    RecallAiSdk.addEventListener('media-capture-status', (evt) => {
+      const capturing = evt?.capturing ?? evt?.status?.capturing ?? null;
+      const msg = `[SDK] media-capture-status: capturing=${capturing} raw=${JSON.stringify(evt).slice(0, 150)}`;
+      console.log(msg);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('sdk:sdkLog', msg);
+      }
+    });
+  } catch (_) {}
+
+  // ── SDK internal log events ─────────────────────────────────────────────────
+  try {
+    RecallAiSdk.addEventListener('log', (evt) => {
+      const msg = `[SDK Internal Log] ${JSON.stringify(evt).slice(0, 200)}`;
+      console.log(msg);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('sdk:sdkLog', msg);
+      }
+    });
+  } catch (_) {}
+
   // ── Recording ended ─────────────────────────────────────────────────────────
   RecallAiSdk.addEventListener('recording-ended', (evt) => {
     const windowId = evt?.window?.id ?? null;
@@ -150,21 +185,40 @@ function initDesktopSdk() {
   // These arrive faster than the webhook path and are the primary transcript
   // delivery mechanism for the desktop app.
   RecallAiSdk.addEventListener('realtime-event', (evt) => {
-    const eventType = evt?.event;
-    if (!eventType) return;
+    // Recall.ai SDK uses 'event' field; guard against SDK version differences
+    // by also checking 'type'. Log the FULL raw event so mismatches surface in
+    // the renderer's SDK diagnostics panel (sdk:sdkLog IPC channel).
+    const eventType = evt?.event || evt?.type || evt?.event_type || null;
 
-    // Log every event type so we can diagnose what the SDK is actually sending
-    console.log('[SDK] realtime-event type=%s', eventType);
+    // Always log the raw event for diagnostics — forward to renderer too so
+    // the user can see it without needing DevTools.
+    const rawLog = `[SDK] realtime-event raw: ${JSON.stringify(evt).slice(0, 300)}`;
+    console.log(rawLog);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('sdk:sdkLog', rawLog);
+    }
+
+    if (!eventType) {
+      console.warn('[SDK] realtime-event has no event/type field — unknown structure, skipping');
+      return;
+    }
 
     if (eventType === 'transcript.data' || eventType === 'transcript.partial_data') {
-      const words = evt?.data?.words || [];
-      const text = words.map(w => w.text || '').join(' ').trim();
-      const participant = evt?.data?.participant || {};
+      // The Recall.ai SDK wraps transcript data one level deeper than expected:
+      //   evt.data       = { bot: {...}, data: { participant, words } }
+      //   evt.data.data  = { participant: {...}, words: [{text,...}] }  ← correct level
+      // Fall back to evt.data then evt for forward-compat with future SDK versions.
+      const eventData = evt?.data?.data || evt?.data || evt;
+      const words = eventData?.words || [];
+      const participant = eventData?.participant || {};
       const speakerName = participant.name || String(participant.id || 'Unknown');
       const isFinal = eventType === 'transcript.data';
 
-      // Detect if the SDK itself identifies this participant as the local user.
-      // Recall.ai may expose is_self, is_local, or type='local' depending on SDK version.
+      const text = words.map(w => w.text || w.word || '').join(' ').trim();
+
+      // is_host marks the meeting host — NOT the local recorder.
+      // We rely on name matching in the backend (sales_rep_names config)
+      // plus mic VAD (isLocalSpeaker) as a secondary signal.
       const sdkMarkedLocal = !!(participant.is_self || participant.is_local || participant.type === 'local');
 
       console.log('[SDK] transcript speaker=%s isFinal=%s isLocal=%s text=%s', speakerName, isFinal, sdkMarkedLocal, text.slice(0, 60));
@@ -180,6 +234,17 @@ function initDesktopSdk() {
       }
     }
   });
+
+  // ── SDK error events ────────────────────────────────────────────────────────
+  try {
+    RecallAiSdk.addEventListener('error', (err) => {
+      const msg = `[SDK] Error event: ${JSON.stringify(err)}`;
+      console.error(msg);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('sdk:sdkLog', msg);
+      }
+    });
+  } catch (_) {}
 
   // ── macOS permissions (no-op on Windows) ───────────────────────────────────
   if (process.platform === 'darwin') {
@@ -302,14 +367,13 @@ function createWindow(port) {
     mainWindow.webContents.openDevTools();
   }
 
-  if (app.isPackaged) {
-    mainWindow.webContents.on('before-input-event', (event, input) => {
-      const key = (input.key || '').toUpperCase();
-      if (key === 'F12' || (input.control && input.shift && key === 'I')) {
-        event.preventDefault();
-      }
-    });
-  }
+  // Ctrl+Shift+D opens DevTools in all builds for SDK diagnostics.
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.control && input.shift && (input.key || '').toUpperCase() === 'D') {
+      mainWindow.webContents.toggleDevTools();
+      event.preventDefault();
+    }
+  });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
