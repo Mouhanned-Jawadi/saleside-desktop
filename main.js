@@ -230,6 +230,7 @@ function initDesktopSdk() {
           isFinal,
           timestamp: Date.now(),
           isLocalSpeaker: sdkMarkedLocal,
+          isHost: !!(participant.is_host),
         });
       }
     }
