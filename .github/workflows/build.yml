@@ -18,7 +18,7 @@ jobs:
           - os: windows-latest
             script: dist
             artifact-path: "release/*.exe"
-          - os: macos-latest
+          - os: macos-14
             script: dist:mac
             artifact-path: "release/*.dmg"
 
@@ -51,7 +51,7 @@ jobs:
         run: npm ci
 
       - name: Import signing certificate (macOS only)
-        if: matrix.os == 'macos-latest'
+        if: matrix.os == 'macos-14'
         env:
           CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
@@ -76,20 +76,15 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run ${{ matrix.script }} -- --publish never
 
-      - name: Debug notarize credentials (macOS only)
-        if: matrix.os == 'macos-latest'
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Flush DNS cache (macOS)
+        if: matrix.os == 'macos-14'
         run: |
-          echo "APPLE_ID length: ${#APPLE_ID}"
-          echo "APPLE_APP_SPECIFIC_PASSWORD length: ${#APPLE_APP_SPECIFIC_PASSWORD}"
-          echo "APPLE_TEAM_ID length: ${#APPLE_TEAM_ID}"
-          echo "APPLE_TEAM_ID value: $APPLE_TEAM_ID"
+          sudo dscacheutil -flushcache
+          sudo killall -HUP mDNSResponder
 
       - name: Build, sign, and notarize macOS
-        if: matrix.os == 'macos-latest'
+        if: matrix.os == 'macos-14'
+        timeout-minutes: 20
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
