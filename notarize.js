@@ -31,7 +31,7 @@ exports.default = async function notarizing(context) {
   console.log(`Notarizing ${appPath}...`);
   execSync(
     `xcrun notarytool submit "${zipPath}" --keychain-profile "NOTARIZE_PROFILE" --wait`,
-    { stdio: 'inherit', timeout: 20 * 60 * 1000 }
+    { stdio: 'inherit', timeout: 35 * 60 * 1000 }
   );
 
   execSync(`rm -f "${zipPath}"`, { stdio: 'inherit' });
