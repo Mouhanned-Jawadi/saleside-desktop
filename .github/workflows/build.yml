@@ -76,15 +76,9 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run ${{ matrix.script }} -- --publish never
 
-      - name: Flush DNS cache (macOS)
-        if: matrix.os == 'macos-14'
-        run: |
-          sudo dscacheutil -flushcache
-          sudo killall -HUP mDNSResponder
-
       - name: Build, sign, and notarize macOS
         if: matrix.os == 'macos-14'
-        timeout-minutes: 40
+        timeout-minutes: 60
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}

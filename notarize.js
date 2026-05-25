@@ -1,4 +1,4 @@
-const { execSync } = require('child_process');
+const { notarize } = require('@electron/notarize');
 const path = require('path');
 
 exports.default = async function notarizing(context) {
@@ -9,33 +9,22 @@ exports.default = async function notarizing(context) {
     return;
   }
 
+  const { APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID } = process.env;
+  if (!APPLE_ID || !APPLE_APP_SPECIFIC_PASSWORD || !APPLE_TEAM_ID) {
+    console.log('Skipping notarization — missing Apple credentials');
+    return;
+  }
+
   const appName = context.packager.appInfo.productFilename;
   const appPath = path.join(appOutDir, `${appName}.app`);
 
-  // Store credentials in keychain so notarytool pre-fetches an auth token.
-  // This avoids a second auth network call during status polling, which is
-  // the call that fails with Code=-1009 on macOS 15 runners.
-  execSync(
-    `xcrun notarytool store-credentials "NOTARIZE_PROFILE" ` +
-    `--apple-id "${process.env.APPLE_ID}" ` +
-    `--password "${process.env.APPLE_APP_SPECIFIC_PASSWORD}" ` +
-    `--team-id "${process.env.APPLE_TEAM_ID}"`,
-    { stdio: 'inherit' }
-  );
-
-  // notarytool requires a .zip, .pkg, or .dmg — not a raw .app bundle.
-  // ditto preserves macOS extended attributes that plain zip would strip.
-  const zipPath = `${appPath}.zip`;
-  execSync(`ditto -c -k --keepParent "${appPath}" "${zipPath}"`, { stdio: 'inherit' });
-
   console.log(`Notarizing ${appPath}...`);
-  execSync(
-    `xcrun notarytool submit "${zipPath}" --keychain-profile "NOTARIZE_PROFILE" --wait`,
-    { stdio: 'inherit', timeout: 35 * 60 * 1000 }
-  );
-
-  execSync(`rm -f "${zipPath}"`, { stdio: 'inherit' });
-
-  console.log(`Stapling ${appPath}...`);
-  execSync(`xcrun stapler staple "${appPath}"`, { stdio: 'inherit' });
+  await notarize({
+    tool: 'notarytool',
+    appPath,
+    appleId: APPLE_ID,
+    appleIdPassword: APPLE_APP_SPECIFIC_PASSWORD,
+    teamId: APPLE_TEAM_ID,
+  });
+  console.log('Notarization complete.');
 };
