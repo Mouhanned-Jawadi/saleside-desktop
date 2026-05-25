@@ -23,11 +23,18 @@ exports.default = async function notarizing(context) {
     { stdio: 'inherit' }
   );
 
+  // notarytool requires a .zip, .pkg, or .dmg — not a raw .app bundle.
+  // ditto preserves macOS extended attributes that plain zip would strip.
+  const zipPath = `${appPath}.zip`;
+  execSync(`ditto -c -k --keepParent "${appPath}" "${zipPath}"`, { stdio: 'inherit' });
+
   console.log(`Notarizing ${appPath}...`);
   execSync(
-    `xcrun notarytool submit "${appPath}" --keychain-profile "NOTARIZE_PROFILE" --wait`,
+    `xcrun notarytool submit "${zipPath}" --keychain-profile "NOTARIZE_PROFILE" --wait`,
     { stdio: 'inherit', timeout: 20 * 60 * 1000 }
   );
+
+  execSync(`rm -f "${zipPath}"`, { stdio: 'inherit' });
 
   console.log(`Stapling ${appPath}...`);
   execSync(`xcrun stapler staple "${appPath}"`, { stdio: 'inherit' });
