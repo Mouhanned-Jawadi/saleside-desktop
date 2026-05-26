@@ -1,4 +1,6 @@
 const { spawnSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const TRANSIENT_MARKERS = [
@@ -97,80 +99,99 @@ exports.default = async function notarizing(context) {
   const appPath = path.join(appOutDir, `${appName}.app`);
   console.log(`Notarizing ${appPath}...`);
 
+  // notarytool only accepts .zip / .pkg / .dmg — zip the .app with ditto first.
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'saleside-notarize-'));
+  const zipPath = path.join(tempDir, `${appName}.zip`);
+  console.log(`\n=== zipping app for submission ===`);
+  console.log(`+ ditto -c -k --sequesterRsrc --keepParent ${appPath} ${zipPath}`);
+  const dittoRes = spawnSync(
+    'ditto',
+    ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath],
+    { encoding: 'utf8', stdio: 'inherit' },
+  );
+  if (dittoRes.status !== 0) {
+    throw new Error(`ditto exited with code ${dittoRes.status} while zipping the .app`);
+  }
+
   const creds = { appleId, appPassword, teamId };
   let submissionId = null;
   let accepted = false;
   let lastFailure = null;
 
-  for (let attempt = 1; attempt <= BACKOFF_SECONDS.length + 1; attempt++) {
-    let result;
-    if (submissionId === null) {
-      console.log(`\n=== notarytool submit, attempt ${attempt} ===`);
-      result = runNotarytool(
-        ['submit', appPath, '--wait', '--timeout', '25m'],
-        creds,
-      );
-    } else {
-      console.log(`\n=== notarytool info ${submissionId}, attempt ${attempt} ===`);
-      // info doesn't take --wait/--timeout; we poll explicitly below if needed.
-      result = runNotarytool(['info', submissionId], creds);
-    }
-
-    // Always try to capture submission ID from output so retries can reattach.
-    const idFromOutput = extractSubmissionId(result.stdout) || extractSubmissionId(result.stderr);
-    if (idFromOutput && !submissionId) {
-      submissionId = idFromOutput;
-      console.log(`Captured submission id: ${submissionId}`);
-    }
-
-    const parsed = parseStatus(result.stdout);
-    if (parsed) {
-      console.log(`notarytool status: ${parsed.status} (${parsed.message || 'no message'})`);
-      if (parsed.status === 'Accepted') {
-        accepted = true;
-        break;
+  try {
+    for (let attempt = 1; attempt <= BACKOFF_SECONDS.length + 1; attempt++) {
+      let result;
+      if (submissionId === null) {
+        console.log(`\n=== notarytool submit, attempt ${attempt} ===`);
+        result = runNotarytool(
+          ['submit', zipPath, '--wait', '--timeout', '25m'],
+          creds,
+        );
+      } else {
+        console.log(`\n=== notarytool info ${submissionId}, attempt ${attempt} ===`);
+        result = runNotarytool(['info', submissionId], creds);
       }
-      if (parsed.status === 'In Progress') {
-        // Network was fine but the submission isn't done yet (only reachable via `info` path).
-        // Backoff then poll info again on next loop iteration.
-        const wait = BACKOFF_SECONDS[Math.min(attempt - 1, BACKOFF_SECONDS.length - 1)];
-        console.log(`Still in progress; sleeping ${wait}s before polling again.`);
-        await sleep(wait);
-        continue;
+
+      // Always echo notarytool's output so failures are diagnosable from logs.
+      if (result.stdout && result.stdout.trim()) {
+        console.log(`--- notarytool stdout ---\n${result.stdout.trim()}\n-------------------------`);
       }
-      if (parsed.status === 'Invalid' || parsed.status === 'Rejected') {
-        // Apple rejected the submission outright — print developer log and stop.
-        if (submissionId) {
-          console.log(`\n=== notarytool log ${submissionId} ===`);
-          runNotarytool(['log', submissionId], creds);
+      if (result.stderr && result.stderr.trim()) {
+        console.log(`--- notarytool stderr ---\n${result.stderr.trim()}\n-------------------------`);
+      }
+
+      const idFromOutput =
+        extractSubmissionId(result.stdout) || extractSubmissionId(result.stderr);
+      if (idFromOutput && !submissionId) {
+        submissionId = idFromOutput;
+        console.log(`Captured submission id: ${submissionId}`);
+      }
+
+      const parsed = parseStatus(result.stdout);
+      if (parsed) {
+        console.log(`notarytool status: ${parsed.status} (${parsed.message || 'no message'})`);
+        if (parsed.status === 'Accepted') {
+          accepted = true;
+          break;
         }
-        throw new Error(`Notarization rejected by Apple with status "${parsed.status}".`);
+        if (parsed.status === 'In Progress') {
+          const wait = BACKOFF_SECONDS[Math.min(attempt - 1, BACKOFF_SECONDS.length - 1)];
+          console.log(`Still in progress; sleeping ${wait}s before polling again.`);
+          await sleep(wait);
+          continue;
+        }
+        if (parsed.status === 'Invalid' || parsed.status === 'Rejected') {
+          if (submissionId) {
+            console.log(`\n=== notarytool log ${submissionId} ===`);
+            const logRes = runNotarytool(['log', submissionId], creds);
+            if (logRes.stdout) console.log(logRes.stdout);
+            if (logRes.stderr) console.log(logRes.stderr);
+          }
+          throw new Error(`Notarization rejected by Apple with status "${parsed.status}".`);
+        }
       }
-    }
 
-    const combined = `${result.stdout}\n${result.stderr}`;
-    if (result.code === 0 && parsed && parsed.status === 'Accepted') {
-      accepted = true;
-      break;
-    }
+      const combined = `${result.stdout}\n${result.stderr}`;
+      lastFailure = combined.trim() || `exit code ${result.code}`;
 
-    lastFailure = combined.trim() || `exit code ${result.code}`;
-
-    if (isTransient(combined) || result.code !== 0) {
-      if (attempt > BACKOFF_SECONDS.length) {
+      // Only retry on TRANSIENT markers (network drops, DNS, timeouts).
+      // Deterministic errors (bad bundle, auth failure, missing entitlements) fail fast.
+      if (!isTransient(combined)) {
+        console.log(`Non-transient notarytool failure (exit ${result.code}) — failing fast without retry.`);
         break;
       }
+
+      if (attempt > BACKOFF_SECONDS.length) break;
+
       const wait = BACKOFF_SECONDS[attempt - 1];
       console.log(
         `Transient notarytool failure (exit ${result.code}). Retrying in ${wait}s — ` +
         `${submissionId ? `will reattach to submission ${submissionId}` : 'will resubmit'}.`,
       );
       await sleep(wait);
-      continue;
     }
-
-    // Non-transient, non-status failure — bail.
-    break;
+  } finally {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
   }
 
   if (!accepted) {
