@@ -78,7 +78,7 @@ jobs:
 
       - name: Build, sign, and notarize macOS
         if: matrix.os == 'macos-14'
-        timeout-minutes: 60
+        timeout-minutes: 90
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}

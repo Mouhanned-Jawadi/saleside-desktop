@@ -15,6 +15,9 @@ const TRANSIENT_MARKERS = [
   'request timed out',
   'temporary failure',
   'Could not resolve host',
+  // Apple-side processing-timeout (submission still in queue, just slow):
+  'was reached before processing completed',
+  'Timeout of',
 ];
 
 const BACKOFF_SECONDS = [30, 90, 180];
@@ -128,8 +131,13 @@ exports.default = async function notarizing(context) {
           creds,
         );
       } else {
-        console.log(`\n=== notarytool info ${submissionId}, attempt ${attempt} ===`);
-        result = runNotarytool(['info', submissionId], creds);
+        // Reattach to the in-flight submission and wait for terminal status —
+        // no re-upload, just continue polling Apple via the existing id.
+        console.log(`\n=== notarytool wait ${submissionId}, attempt ${attempt} ===`);
+        result = runNotarytool(
+          ['wait', submissionId, '--timeout', '25m'],
+          creds,
+        );
       }
 
       // Always echo notarytool's output so failures are diagnosable from logs.
