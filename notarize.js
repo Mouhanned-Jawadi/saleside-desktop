@@ -95,6 +95,13 @@ async function notarizeApp(appPath) {
 
   console.log(`Notarizing ${appPath}...`);
 
+  // Diagnostic: print recent submission history for this team so we can see
+  // whether ANY past notarization has ever succeeded.
+  console.log(`\n=== notarytool history (last 10) ===`);
+  const histRes = runNotarytool(['history'], { appleId, appPassword, teamId });
+  if (histRes.stdout) console.log(histRes.stdout);
+  if (histRes.stderr) console.log(histRes.stderr);
+
   const appBaseName = path.basename(appPath, '.app');
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'saleside-notarize-'));
   const zipPath = path.join(tempDir, `${appBaseName}.zip`);
@@ -192,8 +199,15 @@ async function notarizeApp(appPath) {
 
   if (!accepted) {
     if (submissionId) {
+      console.log(`\n=== notarytool info ${submissionId} (final) ===`);
+      const infoRes = runNotarytool(['info', submissionId], creds);
+      if (infoRes.stdout) console.log(infoRes.stdout);
+      if (infoRes.stderr) console.log(infoRes.stderr);
+
       console.log(`\n=== notarytool log ${submissionId} (final) ===`);
-      runNotarytool(['log', submissionId], creds);
+      const logRes = runNotarytool(['log', submissionId], creds);
+      if (logRes.stdout) console.log(logRes.stdout);
+      if (logRes.stderr) console.log(logRes.stderr);
     }
     throw new Error(
       `Notarization failed after retries. Last failure: ${lastFailure || 'unknown'}`,
