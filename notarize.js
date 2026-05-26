@@ -102,6 +102,27 @@ async function notarizeApp(appPath) {
   if (histRes.stdout) console.log(histRes.stdout);
   if (histRes.stderr) console.log(histRes.stderr);
 
+  // Diagnostic: fetch Apple's full rejection log for the most recent
+  // Invalid/Rejected submission. This shows the EXACT reason Apple is
+  // rejecting (e.g., unsigned sub-binary, bad entitlement, hardened
+  // runtime issue) without us having to wait through a fresh failure.
+  try {
+    const hist = JSON.parse(histRes.stdout);
+    const lastBad = (hist.history || []).find(
+      s => s.status === 'Rejected' || s.status === 'Invalid',
+    );
+    if (lastBad) {
+      console.log(`\n=== notarytool log for last ${lastBad.status} submission (${lastBad.id}) ===`);
+      const lastLogRes = runNotarytool(['log', lastBad.id], { appleId, appPassword, teamId });
+      if (lastLogRes.stdout) console.log(lastLogRes.stdout);
+      if (lastLogRes.stderr) console.log(lastLogRes.stderr);
+    } else {
+      console.log('No prior Rejected/Invalid submissions found in history.');
+    }
+  } catch (e) {
+    console.log(`Could not parse history JSON for log lookup: ${e.message}`);
+  }
+
   const appBaseName = path.basename(appPath, '.app');
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'saleside-notarize-'));
   const zipPath = path.join(tempDir, `${appBaseName}.zip`);
