@@ -7,23 +7,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-windows:
+    runs-on: windows-latest
     permissions:
       contents: write
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            script: dist
-            artifact-path: "release/*.exe"
-          - os: macos-14
-            script: dist:mac
-            artifact-path: "release/*.dmg"
-
-    runs-on: ${{ matrix.os }}
-
     steps:
       - name: Checkout desktop app
         uses: actions/checkout@v4
@@ -50,8 +37,51 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci
 
-      - name: Import signing certificate (macOS only)
-        if: matrix.os == 'macos-14'
+      - name: Build Windows
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist -- --publish never
+
+      - name: Upload Windows artifacts to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          gh release upload "v${VERSION}" release/*.exe --clobber --repo Mouhanned-Jawadi/saleside-desktop
+
+  build-mac-app:
+    runs-on: macos-14
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout desktop app
+        uses: actions/checkout@v4
+
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: Mohanad-Ahmed-ETG/SaleSide-Front-2.0
+          token: ${{ secrets.GH_TOKEN }}
+          path: frontend
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install and build frontend
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - name: Copy frontend dist into desktop app
+        shell: bash
+        run: cp -r frontend/dist/. dist/
+
+      - name: Install desktop dependencies
+        run: npm ci
+
+      - name: Import signing certificate
         env:
           CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
@@ -70,26 +100,77 @@ jobs:
             -s -k "temp_password" build.keychain
           rm certificate.p12
 
-      - name: Build Windows
-        if: matrix.os == 'windows-latest'
+      - name: Build and sign macOS .app (no notarize, no DMG)
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run ${{ matrix.script }} -- --publish never
+          SKIP_NOTARIZE: "1"
+          CI: "true"
+        run: npx electron-builder --mac --dir --publish never
 
-      - name: Build, sign, and notarize macOS
-        if: matrix.os == 'macos-14'
-        timeout-minutes: 90
+      - name: Archive signed .app for handoff
+        shell: bash
+        run: |
+          mkdir -p artifact
+          ditto -c -k --sequesterRsrc --keepParent \
+            "release/mac-arm64/SaleSide.app" \
+            "artifact/SaleSide.app.zip"
+          ls -la artifact/
+
+      - name: Upload signed .app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: saleside-mac-app-signed
+          path: artifact/SaleSide.app.zip
+          retention-days: 7
+          if-no-files-found: error
+
+  notarize-and-package:
+    needs: build-mac-app
+    runs-on: macos-14
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout desktop app
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install desktop dependencies
+        run: npm ci
+
+      - name: Download signed .app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: saleside-mac-app-signed
+          path: artifact
+
+      - name: Extract .app into release/mac-arm64
+        shell: bash
+        run: |
+          mkdir -p release/mac-arm64
+          ditto -x -k artifact/SaleSide.app.zip release/mac-arm64/
+          ls -la release/mac-arm64/
+
+      - name: Notarize and staple .app
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          CI: true
-        run: npm run ${{ matrix.script }} -- --publish never
+          CI: "true"
+        run: node notarize.js "release/mac-arm64/SaleSide.app"
 
-      - name: Upload to GitHub Release
+      - name: Package stapled .app into DMG
+        env:
+          SKIP_NOTARIZE: "1"
+          CI: "true"
+        run: npx electron-builder --mac --prepackaged "release/mac-arm64/SaleSide.app" --publish never
+
+      - name: Upload macOS DMG to GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          gh release upload "v${VERSION}" ${{ matrix.artifact-path }} --clobber --repo Mouhanned-Jawadi/saleside-desktop
+          gh release upload "v${VERSION}" release/*.dmg --clobber --repo Mouhanned-Jawadi/saleside-desktop

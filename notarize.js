@@ -43,7 +43,6 @@ function parseStatus(stdout) {
     const json = JSON.parse(stdout);
     if (json && typeof json.status === 'string') return json;
   } catch (_) {
-    // notarytool sometimes prints a banner before JSON; try line-by-line.
     for (const line of stdout.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
@@ -82,29 +81,23 @@ function runPlain(cmd, args) {
   return res.status;
 }
 
-exports.default = async function notarizing(context) {
-  const { electronPlatformName, appOutDir } = context;
-  if (electronPlatformName !== 'darwin') return;
-  if (!process.env.CI) {
-    console.log('Skipping notarization — not in CI');
-    return;
+async function notarizeApp(appPath) {
+  if (!fs.existsSync(appPath)) {
+    throw new Error(`App bundle not found at ${appPath}`);
   }
 
   const appleId = process.env.APPLE_ID;
   const appPassword = process.env.APPLE_APP_SPECIFIC_PASSWORD;
   const teamId = process.env.APPLE_TEAM_ID;
   if (!appleId || !appPassword || !teamId) {
-    console.log('Skipping notarization — missing Apple credentials');
-    return;
+    throw new Error('Missing Apple credentials (APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID)');
   }
 
-  const appName = context.packager.appInfo.productFilename;
-  const appPath = path.join(appOutDir, `${appName}.app`);
   console.log(`Notarizing ${appPath}...`);
 
-  // notarytool only accepts .zip / .pkg / .dmg — zip the .app with ditto first.
+  const appBaseName = path.basename(appPath, '.app');
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'saleside-notarize-'));
-  const zipPath = path.join(tempDir, `${appName}.zip`);
+  const zipPath = path.join(tempDir, `${appBaseName}.zip`);
   console.log(`\n=== zipping app for submission ===`);
   console.log(`+ ditto -c -k --sequesterRsrc --keepParent ${appPath} ${zipPath}`);
   const dittoRes = spawnSync(
@@ -131,8 +124,6 @@ exports.default = async function notarizing(context) {
           creds,
         );
       } else {
-        // Reattach to the in-flight submission and wait for terminal status —
-        // no re-upload, just continue polling Apple via the existing id.
         console.log(`\n=== notarytool wait ${submissionId}, attempt ${attempt} ===`);
         result = runNotarytool(
           ['wait', submissionId, '--timeout', '25m'],
@@ -140,7 +131,6 @@ exports.default = async function notarizing(context) {
         );
       }
 
-      // Always echo notarytool's output so failures are diagnosable from logs.
       if (result.stdout && result.stdout.trim()) {
         console.log(`--- notarytool stdout ---\n${result.stdout.trim()}\n-------------------------`);
       }
@@ -182,8 +172,6 @@ exports.default = async function notarizing(context) {
       const combined = `${result.stdout}\n${result.stderr}`;
       lastFailure = combined.trim() || `exit code ${result.code}`;
 
-      // Only retry on TRANSIENT markers (network drops, DNS, timeouts).
-      // Deterministic errors (bad bundle, auth failure, missing entitlements) fail fast.
       if (!isTransient(combined)) {
         console.log(`Non-transient notarytool failure (exit ${result.code}) — failing fast without retry.`);
         break;
@@ -222,4 +210,34 @@ exports.default = async function notarizing(context) {
   runPlain('spctl', ['--assess', '--type', 'execute', '--verbose=2', appPath]);
 
   console.log('Notarization complete.');
+}
+
+// electron-builder afterSign hook entry point.
+// Set SKIP_NOTARIZE=1 to disable (used by CI when notarization runs in a separate job).
+exports.default = async function notarizing(context) {
+  if (context.electronPlatformName !== 'darwin') return;
+  if (process.env.SKIP_NOTARIZE === '1') {
+    console.log('Skipping notarization here (SKIP_NOTARIZE=1) — handled in separate CI job.');
+    return;
+  }
+  if (!process.env.CI) {
+    console.log('Skipping notarization — not in CI');
+    return;
+  }
+  const appName = context.packager.appInfo.productFilename;
+  const appPath = path.join(context.appOutDir, `${appName}.app`);
+  await notarizeApp(appPath);
 };
+
+// CLI entry point: `node notarize.js /path/to/SaleSide.app`
+if (require.main === module) {
+  const appPath = process.argv[2];
+  if (!appPath) {
+    console.error('Usage: node notarize.js <path-to-.app>');
+    process.exit(1);
+  }
+  notarizeApp(path.resolve(appPath)).catch(err => {
+    console.error(err.message || err);
+    process.exit(1);
+  });
+}
