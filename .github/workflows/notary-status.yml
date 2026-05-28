@@ -1,0 +1,73 @@
+name: Notary Status Check
+
+# Manually-triggered diagnostic — query Apple's notary service from a macOS
+# runner for the current state of a notarization submission. Use this when a
+# submission is stuck "In Progress" client-side and you need to know whether
+# Apple has moved it to a terminal state (Accepted / Invalid / Rejected) yet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      submission_id:
+        description: 'Notary submission UUID (leave blank to just print history)'
+        required: false
+        default: ''
+
+jobs:
+  check:
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - name: notarytool history (last 50 submissions)
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool history \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --output-format json | tee history.json
+          echo ""
+          echo "=== summary by status ==="
+          python3 -c "
+          import json
+          with open('history.json') as f: data = json.load(f)
+          subs = data.get('history', [])
+          from collections import Counter
+          print('total submissions:', len(subs))
+          print('by status:', dict(Counter(s.get('status', '?') for s in subs)))
+          for s in subs[:10]:
+              print(f\"  {s.get('createdDate', '?')}  {s.get('status', '?'):<12}  {s.get('id', '?')}  {s.get('name', '?')}\")
+          "
+
+      - name: notarytool info ${{ inputs.submission_id }}
+        if: inputs.submission_id != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool info "${{ inputs.submission_id }}" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --output-format json
+
+      - name: notarytool log ${{ inputs.submission_id }} (if reached terminal state)
+        if: inputs.submission_id != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        continue-on-error: true
+        run: |
+          # `notarytool log` errors out if the submission is still In Progress
+          # (Apple only produces a log once the submission reaches Accepted /
+          # Invalid / Rejected). continue-on-error lets the workflow finish
+          # so the previous step's output is still visible.
+          xcrun notarytool log "${{ inputs.submission_id }}" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID"
