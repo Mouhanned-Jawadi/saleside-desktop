@@ -100,11 +100,11 @@ jobs:
             -s -k "temp_password" build.keychain
           rm certificate.p12
 
-      - name: Build and sign macOS .app (no notarize, no DMG)
+      - name: Build and sign macOS .app (arm64 + x64, no notarize, no DMG)
         env:
           SKIP_NOTARIZE: "1"
           CI: "true"
-        run: npx electron-builder --mac --dir --publish never
+        run: npx electron-builder --mac --dir --arm64 --x64 --publish never
 
       - name: Archive signed .app for handoff
         shell: bash
@@ -133,11 +133,29 @@ jobs:
           gh release upload "v${VERSION}" "artifact/SaleSide-${VERSION}-arm64.app.zip" \
             --clobber --repo Mouhanned-Jawadi/saleside-desktop
 
-      - name: Package signed .app into DMG (no notarize)
+      - name: Archive + upload signed x64 .app to GitHub Release (pre-notarize safety net)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          ditto -c -k --sequesterRsrc --keepParent \
+            "release/mac/SaleSide.app" \
+            "artifact/SaleSide-${VERSION}-x64.app.zip"
+          gh release upload "v${VERSION}" "artifact/SaleSide-${VERSION}-x64.app.zip" \
+            --clobber --repo Mouhanned-Jawadi/saleside-desktop
+
+      - name: Package signed arm64 .app into DMG (no notarize)
         env:
           SKIP_NOTARIZE: "1"
           CI: "true"
         run: npx electron-builder --mac --prepackaged "release/mac-arm64/SaleSide.app" --publish never
+
+      - name: Package signed x64 .app into DMG (no notarize)
+        env:
+          SKIP_NOTARIZE: "1"
+          CI: "true"
+        run: npx electron-builder --mac --prepackaged "release/mac/SaleSide.app" --publish never
 
       - name: Upload signed DMG to GitHub Release (pre-notarize safety net)
         shell: bash
