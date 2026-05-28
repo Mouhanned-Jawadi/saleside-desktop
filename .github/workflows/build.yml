@@ -54,7 +54,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 30
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Checkout desktop app
         uses: actions/checkout@v4
@@ -123,6 +123,16 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      - name: Upload signed .app to GitHub Release (pre-notarize safety net)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          cp "artifact/SaleSide.app.zip" "artifact/SaleSide-${VERSION}-arm64.app.zip"
+          gh release upload "v${VERSION}" "artifact/SaleSide-${VERSION}-arm64.app.zip" \
+            --clobber --repo Mouhanned-Jawadi/saleside-desktop
+
   notarize-and-package:
     needs: build-mac-app
     runs-on: macos-14
@@ -160,6 +170,19 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CI: "true"
         run: node notarize.js "release/mac-arm64/SaleSide.app"
+
+      - name: Re-upload notarized .app to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p artifact
+          ditto -c -k --sequesterRsrc --keepParent \
+            "release/mac-arm64/SaleSide.app" \
+            "artifact/SaleSide-${VERSION}-arm64.app.zip"
+          gh release upload "v${VERSION}" "artifact/SaleSide-${VERSION}-arm64.app.zip" \
+            --clobber --repo Mouhanned-Jawadi/saleside-desktop
 
       - name: Package stapled .app into DMG
         env:
