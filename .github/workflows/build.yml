@@ -133,6 +133,20 @@ jobs:
           gh release upload "v${VERSION}" "artifact/SaleSide-${VERSION}-arm64.app.zip" \
             --clobber --repo Mouhanned-Jawadi/saleside-desktop
 
+      - name: Package signed .app into DMG (no notarize)
+        env:
+          SKIP_NOTARIZE: "1"
+          CI: "true"
+        run: npx electron-builder --mac --prepackaged "release/mac-arm64/SaleSide.app" --publish never
+
+      - name: Upload signed DMG to GitHub Release (pre-notarize safety net)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          gh release upload "v${VERSION}" release/*.dmg --clobber --repo Mouhanned-Jawadi/saleside-desktop
+
   notarize-and-package:
     needs: build-mac-app
     runs-on: macos-14
