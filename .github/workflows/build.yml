@@ -149,13 +149,13 @@ jobs:
         env:
           SKIP_NOTARIZE: "1"
           CI: "true"
-        run: npx electron-builder --mac --prepackaged "release/mac-arm64/SaleSide.app" --publish never
+        run: npx electron-builder --mac --arm64 --prepackaged "release/mac-arm64/SaleSide.app" --publish never
 
       - name: Package signed x64 .app into DMG (no notarize)
         env:
           SKIP_NOTARIZE: "1"
           CI: "true"
-        run: npx electron-builder --mac --prepackaged "release/mac/SaleSide.app" --publish never
+        run: npx electron-builder --mac --x64 --prepackaged "release/mac/SaleSide.app" --publish never
 
       - name: Upload signed DMG to GitHub Release (pre-notarize safety net)
         shell: bash
@@ -220,7 +220,7 @@ jobs:
         env:
           SKIP_NOTARIZE: "1"
           CI: "true"
-        run: npx electron-builder --mac --prepackaged "release/mac-arm64/SaleSide.app" --publish never
+        run: npx electron-builder --mac --arm64 --prepackaged "release/mac-arm64/SaleSide.app" --publish never
 
       - name: Upload macOS DMG to GitHub Release
         shell: bash
