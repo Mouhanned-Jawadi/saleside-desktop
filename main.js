@@ -155,6 +155,17 @@ function initDesktopSdk() {
   const _handleMeetingClosed = (evt) => {
     const windowId = evt?.window?.id;
     console.log('[SDK] Meeting closed for window:', windowId);
+    // If the window we are actively recording just closed, audio capture dies
+    // silently and the renderer would only show "No audio detected" 20s later.
+    // Surface it loudly so window-identity churn (common on Google Meet when the
+    // tab title/url changes mid-call) is diagnosable instead of invisible.
+    if (sdkIsRecording && windowId !== undefined && windowId === currentRecordingWindowId) {
+      const warn = `[SDK] WARNING: the window being recorded (${windowId}) closed while recording — audio capture has stopped. If this is Google Meet, the meeting window changed identity; restart the session on the newly detected meeting.`;
+      console.warn(warn);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('sdk:sdkLog', warn);
+      }
+    }
     if (windowId !== undefined) {
       detectedMeetings.delete(windowId);
       if (currentDetectedMeeting?.id === windowId) {
