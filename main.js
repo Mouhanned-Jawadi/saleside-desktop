@@ -59,6 +59,65 @@ function broadcastDetectedMeetings() {
   }
 }
 
+// ── Robust payload extraction for Recall SDK realtime-event ──────────────────
+// The SDK has changed the nesting of transcript data between versions. Rather
+// than hard-coding a path, walk the event object (breadth-first, bounded depth)
+// and return the first value matching a predicate.
+function findFirst(obj, predicate, depth = 0) {
+  if (obj == null || depth > 6) return undefined;
+  if (predicate(obj)) return obj;
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const hit = findFirst(item, predicate, depth + 1);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  }
+  if (typeof obj === 'object') {
+    for (const key of Object.keys(obj)) {
+      const hit = findFirst(obj[key], predicate, depth + 1);
+      if (hit !== undefined) return hit;
+    }
+  }
+  return undefined;
+}
+
+// A words array: non-empty array whose first element is a word object with a
+// text-bearing field. Guards against matching unrelated arrays.
+const isWordsArray = (v) =>
+  Array.isArray(v) && v.length > 0 && typeof v[0] === 'object' && v[0] !== null &&
+  ('text' in v[0] || 'word' in v[0] || 'value' in v[0]);
+
+// A participant object: must carry a speaker identity (name) or a speaker-role
+// flag. We intentionally do NOT match on bare `id` alone, so a `bot: { id }`
+// wrapper isn't mistaken for the participant.
+const isParticipantObject = (v) =>
+  v && typeof v === 'object' && !Array.isArray(v) &&
+  ('name' in v || 'is_self' in v || 'is_local' in v || 'is_host' in v);
+
+// A direct transcript string under a key literally named `transcript`/`text`
+// (some SDK shapes expose a flat string instead of a words array). Scoped to
+// those keys so we never grab unrelated strings like the event-type label.
+function findTranscriptString(obj, depth = 0) {
+  if (obj == null || depth > 6 || typeof obj !== 'object') return undefined;
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const hit = findTranscriptString(item, depth + 1);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  }
+  for (const key of Object.keys(obj)) {
+    const val = obj[key];
+    if ((key === 'transcript' || key === 'text') && typeof val === 'string' && val.trim()) {
+      return val;
+    }
+    const hit = findTranscriptString(val, depth + 1);
+    if (hit !== undefined) return hit;
+  }
+  return undefined;
+}
+
 function initDesktopSdk() {
   if (!RecallAiSdk) return;
 
@@ -204,17 +263,25 @@ function initDesktopSdk() {
     }
 
     if (eventType === 'transcript.data' || eventType === 'transcript.partial_data') {
-      // The Recall.ai SDK wraps transcript data one level deeper than expected:
+      // The Recall.ai SDK has historically wrapped transcript data at different
+      // nesting depths across versions, e.g.:
       //   evt.data       = { bot: {...}, data: { participant, words } }
-      //   evt.data.data  = { participant: {...}, words: [{text,...}] }  ← correct level
-      // Fall back to evt.data then evt for forward-compat with future SDK versions.
-      const eventData = evt?.data?.data || evt?.data || evt;
-      const words = eventData?.words || [];
-      const participant = eventData?.participant || {};
+      //   evt.data.data  = { participant: {...}, words: [{text,...}] }
+      // A fixed `evt.data.data || evt.data || evt` chain breaks the moment a
+      // version adds/removes a wrapper. Instead, locate the words array and the
+      // participant object wherever they live in the event object.
+      const words = findFirst(evt, isWordsArray) || [];
+      const participant = findFirst(evt, isParticipantObject) || {};
       const speakerName = participant.name || String(participant.id || 'Unknown');
       const isFinal = eventType === 'transcript.data';
 
-      const text = words.map(w => w.text || w.word || '').join(' ').trim();
+      // Build text from the words array (newer SDKs sometimes rename text→word→value).
+      // Fall back to a direct transcript string field if no words array is present.
+      let text = words.map(w => w.text || w.word || w.value || '').join(' ').trim();
+      if (!text) {
+        const direct = findTranscriptString(evt);
+        if (direct) text = String(direct).trim();
+      }
 
       // is_host marks the meeting host — NOT the local recorder.
       // We rely on name matching in the backend (sales_rep_names config)
@@ -223,7 +290,20 @@ function initDesktopSdk() {
 
       console.log('[SDK] transcript speaker=%s isFinal=%s isLocal=%s text=%s', speakerName, isFinal, sdkMarkedLocal, text.slice(0, 60));
 
-      if (text && mainWindow && !mainWindow.isDestroyed()) {
+      // A transcript event with no extractable text almost always means the SDK
+      // payload shape changed (e.g. an unpinned version upgrade). Surface it loudly
+      // instead of silently dropping the chunk — otherwise the renderer just shows
+      // "No audio detected" with no clue why.
+      if (!text) {
+        const warn = `[SDK] WARNING: transcript event with empty text — SDK payload shape may have changed. raw=${JSON.stringify(evt).slice(0, 400)}`;
+        console.warn(warn);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('sdk:sdkLog', warn);
+        }
+        return;
+      }
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('sdk:transcript', {
           text,
           speaker: speakerName,
