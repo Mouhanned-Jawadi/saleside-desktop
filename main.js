@@ -1,5 +1,6 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, globalShortcut, screen } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const net = require('net');
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
@@ -26,6 +27,17 @@ const PROXY_PATHS = ['/api', '/auth', '/launch-bot', '/socket.io'];
 let mainWindow;
 let server;
 let activePort = PREFERRED_PORT; // set once a free port is found
+
+// ─── Stealth coaching overlay state ─────────────────────────────────────────
+let overlayWindow = null;          // the frameless/transparent/content-protected HUD
+let overlayClickThrough = false;   // current click-through state
+let overlayPinned = true;          // alwaysOnTop pinned (default on)
+const OVERLAY_SIZES = {            // window sizes for the three layout states
+  pill:     { width: 340, height: 64 },
+  compact:  { width: 404, height: 300 },
+  expanded: { width: 484, height: 480 },
+};
+let overlaySize = 'compact';
 
 /** Resolve with the first free TCP port starting from `start`. */
 function findFreePort(start) {
@@ -497,8 +509,279 @@ function createWindow(port) {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    // Never leave a zombie always-on-top, invisible overlay with no parent window
+    // (it has no taskbar entry and can't be focused — impossible for users to close).
+    if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.destroy();
+    overlayWindow = null;
+    unregisterOverlayHotkeys();
   });
 }
+
+// ─── Stealth coaching overlay ────────────────────────────────────────────────
+
+/** Per-OS, honest screen-share-protection status for the overlay's stealth chip. */
+function getStealthStatus() {
+  const platform = process.platform;
+  if (platform === 'win32') {
+    // WDA_EXCLUDEFROMCAPTURE requires Windows 10 build 19041 (version 2004) or newer.
+    let build = 0;
+    try { build = parseInt((require('os').release().split('.')[2]) || '0', 10); } catch (_) {}
+    const supported = build >= 19041;
+    return {
+      platform: 'win32',
+      level: supported ? 'hidden' : 'unsupported',
+      label: supported ? 'Hidden from screen share' : 'Update Windows to hide from share',
+      build,
+    };
+  }
+  if (platform === 'darwin') {
+    // NSWindowSharingNone is honored by browser getDisplayMedia capture, but NOT by
+    // ScreenCaptureKit used by the native Zoom/Teams desktop clients (Sonoma+).
+    return {
+      platform: 'darwin',
+      level: 'partial',
+      label: 'Hidden from browser share',
+      note: 'May be visible to native Zoom/Teams',
+    };
+  }
+  return { platform, level: 'unknown', label: 'Screen-share status unknown' };
+}
+
+/** Apply (and RE-apply) capture exclusion + always-on-top. Must run after creation,
+ *  after every show, and after every programmatic move/resize/monitor change —
+ *  Windows drops WDA_EXCLUDEFROMCAPTURE on hide/show and some cross-monitor moves. */
+function applyOverlayStealth(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.setContentProtection(true); // Win: WDA_EXCLUDEFROMCAPTURE / mac: NSWindowSharingNone
+    win.setAlwaysOnTop(overlayPinned, 'screen-saver');
+    if (process.platform === 'darwin') {
+      win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    }
+  } catch (e) {
+    console.warn('[Overlay] applyOverlayStealth failed:', e?.message || e);
+  }
+}
+
+function sendStealthStatus() {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('overlay:stealthStatus', getStealthStatus());
+  }
+}
+
+const overlayBoundsFile = () => path.join(app.getPath('userData'), 'overlay-bounds.json');
+
+function persistOverlayBounds() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  try {
+    fs.writeFileSync(
+      overlayBoundsFile(),
+      JSON.stringify({ ...overlayWindow.getBounds(), opacity: overlayWindow.getOpacity(), size: overlaySize })
+    );
+  } catch (_) {}
+}
+
+function restoreOverlayBounds(win) {
+  try {
+    const saved = JSON.parse(fs.readFileSync(overlayBoundsFile(), 'utf8'));
+    if (typeof saved.opacity === 'number') win.setOpacity(saved.opacity);
+    if (typeof saved.x === 'number' && typeof saved.y === 'number') {
+      const display = screen.getDisplayMatching(saved) || screen.getPrimaryDisplay();
+      const wa = display.workArea;
+      const w = saved.width || win.getBounds().width;
+      const h = saved.height || win.getBounds().height;
+      const x = Math.min(Math.max(saved.x, wa.x), wa.x + wa.width - w);
+      const y = Math.min(Math.max(saved.y, wa.y), wa.y + wa.height - h);
+      win.setBounds({ x, y, width: w, height: h });
+    }
+  } catch (_) { /* first run: keep the default top-center position */ }
+}
+
+/** Re-clamp the overlay into a connected display (e.g. after a monitor is unplugged)
+ *  and re-apply stealth (affinity can drop during the move). */
+function clampOverlayToDisplays() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  const b = overlayWindow.getBounds();
+  const display = screen.getDisplayMatching(b) || screen.getPrimaryDisplay();
+  const wa = display.workArea;
+  const x = Math.min(Math.max(b.x, wa.x), wa.x + wa.width - b.width);
+  const y = Math.min(Math.max(b.y, wa.y), wa.y + wa.height - b.height);
+  if (x !== b.x || y !== b.y) overlayWindow.setBounds({ x, y, width: b.width, height: b.height });
+  applyOverlayStealth(overlayWindow);
+}
+
+function createOverlayWindow(port) {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    if (!overlayWindow.isVisible()) { overlayWindow.showInactive(); applyOverlayStealth(overlayWindow); }
+    return overlayWindow;
+  }
+  const { width, height } = OVERLAY_SIZES[overlaySize] || OVERLAY_SIZES.compact;
+  const wa = screen.getPrimaryDisplay().workArea;
+
+  overlayWindow = new BrowserWindow({
+    width,
+    height,
+    x: Math.round(wa.x + (wa.width - width) / 2), // default: top-center (eyes near webcam)
+    y: Math.round(wa.y + 120),
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    resizable: true,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    focusable: false,    // read-only HUD — never steals focus from the meeting
+    show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+      backgroundThrottling: false, // keep rendering while the meeting window is focused
+    },
+  });
+
+  if (process.platform === 'darwin') {
+    try { overlayWindow.setWindowButtonVisibility(false); } catch (_) {}
+  }
+
+  restoreOverlayBounds(overlayWindow);
+  overlayWindow.loadURL(`http://localhost:${port}/overlay`);
+
+  overlayWindow.once('ready-to-show', () => {
+    applyOverlayStealth(overlayWindow);
+    overlayWindow.showInactive();         // show without stealing focus from the meeting
+    applyOverlayStealth(overlayWindow);   // re-apply post-show (Win11 timing + hide/show bug)
+    sendStealthStatus();
+  });
+  overlayWindow.on('show', () => applyOverlayStealth(overlayWindow));
+  overlayWindow.on('moved', persistOverlayBounds);
+  overlayWindow.on('resize', persistOverlayBounds);
+  overlayWindow.on('closed', () => { overlayWindow = null; });
+  return overlayWindow;
+}
+
+function applyOverlaySize() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  const { width, height } = OVERLAY_SIZES[overlaySize] || OVERLAY_SIZES.compact;
+  const [x, y] = overlayWindow.getPosition();
+  overlayWindow.setBounds({ x, y, width, height });
+  applyOverlayStealth(overlayWindow);
+  overlayWindow.webContents.send('overlay:request-size', { size: overlaySize });
+  persistOverlayBounds();
+}
+
+function nudgeOverlay(dx, dy) {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  const [x, y] = overlayWindow.getPosition();
+  overlayWindow.setPosition(x + dx, y + dy);
+  applyOverlayStealth(overlayWindow); // re-apply after programmatic move
+  persistOverlayBounds();
+}
+
+function toggleOverlayVisibility() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  if (overlayWindow.isVisible()) overlayWindow.hide();
+  else { overlayWindow.showInactive(); applyOverlayStealth(overlayWindow); }
+}
+
+function cycleOverlaySize() {
+  const order = ['pill', 'compact', 'expanded'];
+  overlaySize = order[(order.indexOf(overlaySize) + 1) % order.length];
+  applyOverlaySize();
+}
+
+function registerOverlayHotkeys() {
+  const mod = process.platform === 'darwin' ? 'Command' : 'Control';
+  const reg = (accel, fn) => {
+    try {
+      const ok = globalShortcut.register(accel, fn);
+      if (!ok) console.warn('[Overlay] hotkey already owned by another app, not registered:', accel);
+    } catch (e) { console.warn('[Overlay] hotkey register error', accel, e?.message || e); }
+  };
+  // Keep the global set small + low-conflict. Movement uses Alt to avoid clobbering
+  // browser/meeting Cmd+Arrow word-nav.
+  reg(`${mod}+\\`, toggleOverlayVisibility);     // panic hide / show — always works, unfocused
+  reg(`${mod}+Shift+Space`, cycleOverlaySize);   // cycle pill → compact → expanded
+  reg(`${mod}+Alt+Up`,    () => nudgeOverlay(0, -40));
+  reg(`${mod}+Alt+Down`,  () => nudgeOverlay(0,  40));
+  reg(`${mod}+Alt+Left`,  () => nudgeOverlay(-40, 0));
+  reg(`${mod}+Alt+Right`, () => nudgeOverlay( 40, 0));
+}
+
+function unregisterOverlayHotkeys() {
+  try { globalShortcut.unregisterAll(); } catch (_) {}
+}
+
+// ─── Overlay IPC ─────────────────────────────────────────────────────────────
+ipcMain.handle('overlay:show', () => {
+  createOverlayWindow(activePort);
+  registerOverlayHotkeys();
+  // Hide the main window's coaching feed from screen share too, so an "entire screen"
+  // share never reveals it — only the stealth overlay shows on the rep's own screen.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.setContentProtection(true); } catch (_) {}
+  }
+  return true;
+});
+
+ipcMain.handle('overlay:hide', () => {
+  unregisterOverlayHotkeys();
+  if (overlayWindow && !overlayWindow.isDestroyed()) { persistOverlayBounds(); overlayWindow.destroy(); }
+  overlayWindow = null;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.setContentProtection(false); } catch (_) {}
+  }
+  return true;
+});
+
+ipcMain.on('overlay:pushState', (_e, snapshot) => {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('overlay:state', snapshot);
+  }
+});
+
+ipcMain.on('overlay:move-by', (_e, { dx, dy } = {}) => nudgeOverlay(dx || 0, dy || 0));
+
+ipcMain.on('overlay:resize-by', (_e, { dw, dh } = {}) => {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  const b = overlayWindow.getBounds();
+  overlayWindow.setBounds({
+    x: b.x, y: b.y,
+    width: Math.max(300, Math.min(560, b.width + (dw || 0))),
+    height: Math.max(140, b.height + (dh || 0)),
+  });
+  applyOverlayStealth(overlayWindow);
+  persistOverlayBounds();
+});
+
+ipcMain.on('overlay:set-opacity', (_e, value) => {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  overlayWindow.setOpacity(Math.min(1, Math.max(0.2, Number(value) || 1)));
+  persistOverlayBounds();
+});
+
+ipcMain.on('overlay:set-clickthrough', (_e, enabled) => {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  overlayClickThrough = !!enabled;
+  overlayWindow.setIgnoreMouseEvents(overlayClickThrough, { forward: true });
+});
+
+ipcMain.on('overlay:set-pinned', (_e, pinned) => {
+  overlayPinned = !!pinned;
+  applyOverlayStealth(overlayWindow);
+});
+
+ipcMain.on('overlay:set-size', (_e, size) => {
+  if (['pill', 'compact', 'expanded'].includes(size)) { overlaySize = size; applyOverlaySize(); }
+});
+
+ipcMain.on('overlay:hide-self', () => {
+  if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.hide();
+});
 
 app.whenReady().then(() => {
   // Init the Desktop Recording SDK before the window opens so meeting
@@ -506,12 +789,21 @@ app.whenReady().then(() => {
   initDesktopSdk();
   startServer();
 
+  // Keep the overlay on a connected display + re-stealthed when monitors change.
+  try {
+    screen.on('display-removed', clampOverlayToDisplays);
+    screen.on('display-metrics-changed', clampOverlayToDisplays);
+  } catch (_) {}
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
   });
 });
+
+// globalShortcut registrations must be released before quit.
+app.on('will-quit', () => { unregisterOverlayHotkeys(); });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

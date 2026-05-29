@@ -135,6 +135,39 @@ contextBridge.exposeInMainWorld('electron', {
     },
   },
 
+  // ─── Stealth Coaching Overlay ───────────────────────────────────────────────
+  // A separate frameless/transparent/content-protected window that floats over the
+  // meeting and is invisible to screen share. The MAIN window relays coaching state
+  // to it via overlay.pushState(); the OVERLAY window consumes it via overlay.onState().
+  overlay: {
+    /** (main window) Create + show the overlay, register hotkeys, protect the main window. */
+    show: () => ipcRenderer.invoke('overlay:show'),
+    /** (main window) Hide/destroy the overlay, unregister hotkeys, unprotect the main window. */
+    hide: () => ipcRenderer.invoke('overlay:hide'),
+    /** (main window) Relay a compact coaching snapshot to the overlay. Fire-and-forget. */
+    pushState: (snapshot) => ipcRenderer.send('overlay:pushState', snapshot),
+    /** (overlay window) Subscribe to relayed coaching snapshots. */
+    onState: (callback) => ipcRenderer.on('overlay:state', (_e, data) => callback(data)),
+    removeStateListener: () => ipcRenderer.removeAllListeners('overlay:state'),
+    /** (overlay window) Report the runtime stealth/protection status to render the honest chip. */
+    onStealthStatus: (callback) => ipcRenderer.on('overlay:stealthStatus', (_e, data) => callback(data)),
+    /** (overlay window) Window controls driven from in-overlay UI buttons. */
+    moveBy: (dx, dy) => ipcRenderer.send('overlay:move-by', { dx, dy }),
+    resizeBy: (dw, dh) => ipcRenderer.send('overlay:resize-by', { dw, dh }),
+    setOpacity: (value) => ipcRenderer.send('overlay:set-opacity', value),
+    setClickThrough: (enabled) => ipcRenderer.send('overlay:set-clickthrough', enabled),
+    setPinned: (pinned) => ipcRenderer.send('overlay:set-pinned', pinned),
+    setSize: (size) => ipcRenderer.send('overlay:set-size', size), // 'pill' | 'compact' | 'expanded'
+    hideSelf: () => ipcRenderer.send('overlay:hide-self'),
+    /** (overlay window) Receive size-cycle requests originating from the global hotkey. */
+    onSizeRequest: (callback) => ipcRenderer.on('overlay:request-size', (_e, data) => callback(data)),
+    removeAllOverlayListeners: () => {
+      ['overlay:state', 'overlay:stealthStatus', 'overlay:request-size'].forEach((c) =>
+        ipcRenderer.removeAllListeners(c)
+      );
+    },
+  },
+
   // ─── Legacy / compatibility ────────────────────────────────────────────────
 
   /**
