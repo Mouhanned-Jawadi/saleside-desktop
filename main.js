@@ -223,6 +223,15 @@ function initDesktopSdk() {
       console.log(msg);
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('sdk:sdkLog', msg);
+        // On macOS, capturing=false while we believe we're recording means a TCC
+        // permission (screen recording / microphone) is blocking capture. Surface
+        // it as an actionable message instead of silently producing no audio.
+        if (process.platform === 'darwin' && capturing === false && sdkIsRecording) {
+          mainWindow.webContents.send('sdk:permissionIssue', {
+            reason: 'capture_stopped',
+            message: 'macOS is not capturing meeting audio. Grant Screen Recording and Microphone to SaleSide in System Settings → Privacy & Security, then restart the app.',
+          });
+        }
       }
     });
   } catch (_) {}
@@ -369,6 +378,18 @@ ipcMain.handle('sdk:getDetectedMeetings', () => Array.from(detectedMeetings.valu
 ipcMain.handle('sdk:startRecording', async (_event, { windowId, uploadToken }) => {
   if (!RecallAiSdk) throw new Error('Desktop SDK not available');
   console.log('[SDK] startRecording windowId=%s token=%s...', windowId, uploadToken?.slice(0, 8));
+
+  // On macOS, mic + screen-capture + accessibility are gated by TCC permissions.
+  // Re-request right before recording (the startup request may have been dismissed,
+  // and screen-capture in particular must be granted in System Settings). Without
+  // these, the native SDK silently captures nothing and the session dies.
+  if (process.platform === 'darwin') {
+    for (const perm of ['accessibility', 'microphone', 'screen-capture']) {
+      try { await RecallAiSdk.requestPermission(perm); }
+      catch (err) { console.warn('[SDK] requestPermission(%s) failed: %s', perm, err?.message || err); }
+    }
+  }
+
   try {
     await RecallAiSdk.startRecording({ windowId, uploadToken });
     currentRecordingWindowId = windowId;
@@ -376,6 +397,13 @@ ipcMain.handle('sdk:startRecording', async (_event, { windowId, uploadToken }) =
     console.log('[SDK] Recording started successfully for windowId=%s', windowId);
   } catch (err) {
     console.error('[SDK] startRecording FAILED:', err);
+    // On macOS a failure here is almost always a denied/ungranted permission.
+    if (process.platform === 'darwin' && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('sdk:permissionIssue', {
+        reason: 'start_failed',
+        message: 'macOS blocked recording. Grant Screen Recording, Microphone, and Accessibility to SaleSide in System Settings → Privacy & Security, then restart the app.',
+      });
+    }
     throw err;
   }
 });

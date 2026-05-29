@@ -108,6 +108,15 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.on('sdk:sdkLog', (_event, msg) => callback(msg));
     },
 
+    /**
+     * Register a callback for macOS permission problems (screen recording /
+     * microphone / accessibility) detected when starting or during recording.
+     * @param {function({reason: string, message: string}): void} callback
+     */
+    onPermissionIssue: (callback) => {
+      ipcRenderer.on('sdk:permissionIssue', (_event, data) => callback(data));
+    },
+
     /** Remove all listeners for a given SDK channel (use on component unmount). */
     removeAllListeners: (channel) => {
       const allowed = [
@@ -118,6 +127,7 @@ contextBridge.exposeInMainWorld('electron', {
         'sdk:recordingEnded',
         'sdk:transcript',
         'sdk:sdkLog',
+        'sdk:permissionIssue',
       ];
       if (allowed.includes(channel)) {
         ipcRenderer.removeAllListeners(channel);

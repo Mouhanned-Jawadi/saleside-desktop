@@ -74,7 +74,13 @@
       "gatekeeperAssess": false,
       "notarize": false,
       "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "SaleSide captures meeting audio to provide real-time sales coaching.",
+        "NSCameraUsageDescription": "SaleSide may access the camera during video meetings.",
+        "NSAppleEventsUsageDescription": "SaleSide uses accessibility to detect the active meeting window.",
+        "NSScreenCaptureUsageDescription": "SaleSide records the meeting window audio to transcribe the call."
+      }
     },
     "dmg": {
       "sign": false
