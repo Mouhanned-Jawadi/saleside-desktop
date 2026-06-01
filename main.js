@@ -32,6 +32,7 @@ let activePort = PREFERRED_PORT; // set once a free port is found
 let overlayWindow = null;          // the frameless/transparent/content-protected HUD
 let overlayClickThrough = false;   // current click-through state
 let overlayPinned = true;          // alwaysOnTop pinned (default on)
+let stealthEnabled = true;         // screen-share invisibility for BOTH app + overlay (default: invisible)
 const OVERLAY_SIZES = {            // window sizes for the three layout states
   pill:     { width: 340, height: 64 },
   compact:  { width: 404, height: 300 },
@@ -521,6 +522,9 @@ function createWindow(port) {
 
 /** Per-OS, honest screen-share-protection status for the overlay's stealth chip. */
 function getStealthStatus() {
+  // When the user has opted into visible mode, report it honestly — the overlay
+  // (and the app) are intentionally capturable.
+  if (!stealthEnabled) return { level: 'visible', label: 'Visible to everyone' };
   const platform = process.platform;
   if (platform === 'win32') {
     // WDA_EXCLUDEFROMCAPTURE requires Windows 10 build 19041 (version 2004) or newer.
@@ -553,7 +557,7 @@ function getStealthStatus() {
 function applyOverlayStealth(win) {
   if (!win || win.isDestroyed()) return;
   try {
-    win.setContentProtection(true); // Win: WDA_EXCLUDEFROMCAPTURE / mac: NSWindowSharingNone
+    win.setContentProtection(stealthEnabled); // Win: WDA_EXCLUDEFROMCAPTURE / mac: NSWindowSharingNone
     win.setAlwaysOnTop(overlayPinned, 'screen-saver');
     if (process.platform === 'darwin') {
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -723,7 +727,7 @@ ipcMain.handle('overlay:show', () => {
   // Hide the main window's coaching feed from screen share too, so an "entire screen"
   // share never reveals it — only the stealth overlay shows on the rep's own screen.
   if (mainWindow && !mainWindow.isDestroyed()) {
-    try { mainWindow.setContentProtection(true); } catch (_) {}
+    try { mainWindow.setContentProtection(stealthEnabled); } catch (_) {}
   }
   return true;
 });
@@ -781,6 +785,17 @@ ipcMain.on('overlay:set-size', (_e, size) => {
 
 ipcMain.on('overlay:hide-self', () => {
   if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.hide();
+});
+
+// Visible/Invisible switch (driven from the Live Call page). Flips screen-share
+// content-protection for BOTH the main app window and the overlay, live.
+ipcMain.on('overlay:set-stealth', (_e, enabled) => {
+  stealthEnabled = !!enabled;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.setContentProtection(stealthEnabled); } catch (_) {}
+  }
+  applyOverlayStealth(overlayWindow); // no-ops safely if the overlay isn't up
+  sendStealthStatus();                // refresh the honest chip in the overlay
 });
 
 app.whenReady().then(() => {

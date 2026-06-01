@@ -157,6 +157,8 @@ contextBridge.exposeInMainWorld('electron', {
     setOpacity: (value) => ipcRenderer.send('overlay:set-opacity', value),
     setClickThrough: (enabled) => ipcRenderer.send('overlay:set-clickthrough', enabled),
     setPinned: (pinned) => ipcRenderer.send('overlay:set-pinned', pinned),
+    /** (main window) Toggle screen-share invisibility for BOTH the app + overlay windows. */
+    setStealth: (enabled) => ipcRenderer.send('overlay:set-stealth', enabled),
     setSize: (size) => ipcRenderer.send('overlay:set-size', size), // 'pill' | 'compact' | 'expanded'
     hideSelf: () => ipcRenderer.send('overlay:hide-self'),
     /** (overlay window) Receive size-cycle requests originating from the global hotkey. */
