@@ -372,10 +372,56 @@ function initDesktopSdk() {
   }
 }
 
+// ─── Persistent auth token store ─────────────────────────────────────────────
+// The renderer's localStorage is scoped by origin (http://localhost:<port>), and the
+// Express port can drift between launches — which would silently lose the session.
+// We persist the JWT in a small file under userData so it survives regardless of port,
+// and rehydrate the renderer's localStorage from it at startup.
+
+/** Absolute path to the token file (computed lazily; app must be ready). */
+function authTokenFilePath() {
+  return path.join(app.getPath('userData'), 'auth.json');
+}
+
+/** Read the stored JWT, or null if absent/unreadable. */
+function readStoredToken() {
+  try {
+    const raw = fs.readFileSync(authTokenFilePath(), 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed.token === 'string' && parsed.token ? parsed.token : null;
+  } catch (_) {
+    return null; // missing or corrupt file → treat as no session
+  }
+}
+
+/** Persist the JWT to disk (best-effort). */
+function writeStoredToken(token) {
+  try {
+    fs.writeFileSync(authTokenFilePath(), JSON.stringify({ token: token || '' }), 'utf8');
+  } catch (err) {
+    console.warn('[Auth] Failed to persist token:', err.message);
+  }
+}
+
+/** Remove the persisted JWT (best-effort). */
+function clearStoredToken() {
+  try {
+    fs.rmSync(authTokenFilePath(), { force: true });
+  } catch (err) {
+    console.warn('[Auth] Failed to clear token:', err.message);
+  }
+}
+
 // ─── IPC Handlers ─────────────────────────────────────────────────────────────
 
 /** Return the active server port so the preload can expose the correct origin. */
 ipcMain.handle('app:getPort', () => activePort);
+
+// Auth token bridge — lets the renderer persist the JWT independently of the
+// volatile localhost origin so the desktop app reopens to the dashboard when signed in.
+ipcMain.handle('auth:getToken', () => readStoredToken());
+ipcMain.handle('auth:setToken', (_event, token) => { writeStoredToken(token); return true; });
+ipcMain.handle('auth:clearToken', () => { clearStoredToken(); return true; });
 
 /** Return the currently detected meeting (or null) — backward-compat single-item form. */
 ipcMain.handle('sdk:getDetectedMeeting', () => {

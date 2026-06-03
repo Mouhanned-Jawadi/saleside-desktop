@@ -170,6 +170,20 @@ contextBridge.exposeInMainWorld('electron', {
     },
   },
 
+  // ─── Auth token persistence ────────────────────────────────────────────────
+  // The renderer's localStorage is scoped by origin (http://localhost:<port>), and the
+  // Express port can drift between launches. This bridge persists the JWT in the main
+  // process (a file under userData) so the session survives regardless of the port, and
+  // the renderer rehydrates localStorage from it at startup.
+  auth: {
+    /** @returns {Promise<string|null>} the stored JWT, or null if none. */
+    getToken: () => ipcRenderer.invoke('auth:getToken'),
+    /** Persist the JWT. @param {string} token */
+    setToken: (token) => ipcRenderer.invoke('auth:setToken', token),
+    /** Remove the persisted JWT (called on logout). */
+    clearToken: () => ipcRenderer.invoke('auth:clearToken'),
+  },
+
   // ─── Legacy / compatibility ────────────────────────────────────────────────
 
   /**
