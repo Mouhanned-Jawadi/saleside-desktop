@@ -36,7 +36,9 @@ let stealthEnabled = true;         // screen-share invisibility for BOTH app + o
 const OVERLAY_SIZES = {            // window sizes for the three layout states
   pill:     { width: 340, height: 64 },
   compact:  { width: 404, height: 300 },
-  expanded: { width: 484, height: 480 },
+  // expanded carries a side "mini conversation" column beside the coaching card,
+  // so it is wider/taller than compact.
+  expanded: { width: 600, height: 520 },
 };
 let overlaySize = 'compact';
 
