@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- App Sandbox is MANDATORY for Mac App Store distribution. -->
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+
+  <!-- Outbound network: calls to the production backend / Socket.IO. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+
+  <!-- Inbound loopback: the app runs an Express server on localhost:3000. -->
+  <key>com.apple.security.network.server</key>
+  <true/>
+
+  <!-- Microphone (mic VAD + meeting audio) and camera during video meetings. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+  <key>com.apple.security.device.camera</key>
+  <true/>
+
+  <!-- Allow saving user-chosen files (exports, if any). -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+
+  <!-- NOTE: App Groups (com.apple.security.application-groups) is intentionally
+       omitted. Electron helper processes share the sandbox via the inherit
+       entitlement, so a group container is not needed for this app. Add it later
+       only if the app must share a container with an extension.
+
+       NOTE: The Developer-ID entitlements used by the DMG build
+       (cs.disable-library-validation, cs.allow-unsigned-executable-memory,
+       cs.allow-jit, cs.allow-dyld-environment-variables) are NOT permitted
+       under App Sandbox and are intentionally omitted here. The Recall native
+       SDK and system/screen-audio capture may not function under the sandbox —
+       this is the feasibility question the CI spike must answer. -->
+</dict>
+</plist>

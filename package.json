@@ -8,6 +8,7 @@
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win",
     "dist:mac": "electron-builder --mac",
+    "dist:mas": "electron-builder --mac mas",
     "dist:portable": "electron-builder --config.win.target=portable",
     "dist:signed": "electron-builder"
   },
@@ -81,6 +82,15 @@
         "NSAppleEventsUsageDescription": "SaleSide uses accessibility to detect the active meeting window.",
         "NSScreenCaptureUsageDescription": "SaleSide records the meeting window audio to transcribe the call."
       }
+    },
+    "mas": {
+      "type": "distribution",
+      "category": "public.app-category.business",
+      "hardenedRuntime": false,
+      "provisioningProfile": "build/embedded.provisionprofile",
+      "entitlements": "build/entitlements.mas.plist",
+      "entitlementsInherit": "build/entitlements.mas.inherit.plist",
+      "entitlementsLoginHelper": "build/entitlements.mas.loginhelper.plist"
     },
     "dmg": {
       "sign": false
