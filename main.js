@@ -133,6 +133,32 @@ function findTranscriptString(obj, depth = 0) {
   return undefined;
 }
 
+// Best-effort extraction of a relative-seconds timestamp from a Recall transcript
+// word object, mirroring the same defensive probing the backend does for the web
+// bot-join path (SaleSide-Back-2.0/app/endpoints/recall_routes.py, _word_relative_time).
+// Recall has nested this as {"start_timestamp": {"relative": 12.3, ...}} historically,
+// but the shape isn't guaranteed to match here — this may simply find nothing, in
+// which case the segment timing stays null and callers degrade gracefully.
+function wordRelativeTime(word, key) {
+  const val = word ? word[`${key}_timestamp`] : undefined;
+  if (val && typeof val === 'object' && typeof val.relative === 'number') return val.relative;
+  if (typeof val === 'number') return val;
+  const flat = word ? word[key] : undefined;
+  if (typeof flat === 'number') return flat;
+  return undefined;
+}
+
+// Compute a segment's (start, end) relative-second timestamps from its words array.
+// Returns nulls when no word carries a recognizable timestamp field.
+function segmentRelativeTimes(words) {
+  const starts = (words || []).map(w => wordRelativeTime(w, 'start')).filter(t => typeof t === 'number');
+  const ends = (words || []).map(w => wordRelativeTime(w, 'end')).filter(t => typeof t === 'number');
+  if (starts.length && ends.length) {
+    return { start: Math.min(...starts), end: Math.max(...ends) };
+  }
+  return { start: null, end: null };
+}
+
 function initDesktopSdk() {
   if (!RecallAiSdk) return;
 
@@ -338,6 +364,11 @@ function initDesktopSdk() {
         return;
       }
 
+      // Segment timing for the scorecard's Interruptions/monologue-duration metrics —
+      // only worth computing for final chunks, and only if the SDK actually exposes
+      // per-word timestamps here (unconfirmed; degrades to null if it doesn't).
+      const { start: segStart, end: segEnd } = isFinal ? segmentRelativeTimes(words) : { start: null, end: null };
+
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('sdk:transcript', {
           text,
@@ -346,6 +377,8 @@ function initDesktopSdk() {
           timestamp: Date.now(),
           isLocalSpeaker: sdkMarkedLocal,
           isHost: !!(participant.is_host),
+          segStart,
+          segEnd,
         });
       }
     }
